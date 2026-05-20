@@ -84,9 +84,11 @@ class XXDBXProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         // xxdbx uses dashes between words in search URLs
-        // Spaces and + signs don't work, so we replace spaces with dashes
+        // URLEncoder turns spaces into + which gives 0 results
+        // Spaces must become dashes: "Kwini Kim" -> "Kwini-Kim"
         val searchQuery = query.trim()
-            .replace("\s+".toRegex(), "-")
+            .replace(" ", "-")
+            .replace(Regex("\\s+"), "-")
         val searchUrl = "$mainUrl/search/$searchQuery"
         val document = app.get(searchUrl).document
 
@@ -107,8 +109,7 @@ class XXDBXProvider : MainAPI() {
 
         val description = document.selectFirst("#desc")?.text()?.trim()
 
-        // Tags from video page - these are clickable on the website
-        // In Cloudstream they're display-only (app limitation)
+        // Tags from video page - displayed as chips in Cloudstream (not clickable, app limitation)
         val tags = document.select("div.tags a[href*=/search/]").mapNotNull {
             it.text()?.trim()
         }.filter { it.isNotEmpty() }
@@ -123,7 +124,7 @@ class XXDBXProvider : MainAPI() {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
-            addActors(actors)
+            this.actors = actors
         }
     }
 
