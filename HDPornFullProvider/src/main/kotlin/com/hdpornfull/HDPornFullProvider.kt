@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.network.*
 class HDPornFullProvider : MainAPI() {
     override var mainUrl = "https://www.hdpornfull.com"
     override var name = "HDPornFull"
-    override val lang = "en"
+    override var lang = "en"
     override val supportedTypes = setOf(TvType.Movie, TvType.NSFW)
     
     override suspend fun search(query: String): List<SearchResponse> {
@@ -15,13 +15,18 @@ class HDPornFullProvider : MainAPI() {
         val doc = app.get(url).document
         val results = mutableListOf<SearchResponse>()
         
-        doc.select(".movie-list .movie-item, .film-list .film-item").forEach { item ->
-            val title = item.selectFirst(".movie-title, .film-title, h3 a")?.text() ?: return@forEach
+        doc.select(".movie-list .movie-item, .film-list .film-item, .item").forEach { item ->
+            val title = item.selectFirst(".movie-title, .film-title, h3 a, .title")?.text() ?: return@forEach
             val href = item.selectFirst("a")?.attr("href") ?: return@forEach
             val poster = item.selectFirst("img")?.attr("data-src") ?: item.selectFirst("img")?.attr("src")
             
             results.add(
-                newSearchResponse(name = title, url = href, posterUrl = poster)
+                newMovieSearchResponse(
+                    name = title,
+                    url = href,
+                    type = TvType.Movie,
+                    posterUrl = poster
+                )
             )
         }
         return results
@@ -40,15 +45,12 @@ class HDPornFullProvider : MainAPI() {
             url = url,
             type = TvType.Movie,
             posterUrl = poster,
-            plot = description
-        ) {
-            if (iframeUrl != null) {
-                extractor iframeUrl
-            }
-        }
+            plot = description,
+            dataUrl = iframeUrl ?: url
+        )
     }
     
-    override suspend fun loadLinks(data: String, isCasting: Boolean, callback: (ExtractorLink) -> Unit) {
+    override suspend fun loadLinks(data: String, isCasting: Boolean, callback: LoadCallback) {
         val doc = app.get(data).document
         val videoSrc = doc.selectFirst("video source")?.attr("src")
         if (videoSrc != null) {
