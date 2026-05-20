@@ -25,22 +25,16 @@ allprojects {
     }
 }
 
-fun Project.cloudstream(configuration: CloudstreamExtension.() -> Unit) =
-    extensions.getByName("cloudstream").configuration()
-
-fun Project.android(configuration: BaseExtension.() -> Unit) =
-    extensions.getByName("android").configuration()
-
 subprojects {
     apply(plugin = "com.android.library")
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
-    cloudstream {
+    extensions.configure<CloudstreamExtension> {
         setRepo(System.getenv("GITHUB_REPOSITORY") ?: "AiCurv/aicurv")
     }
 
-    android {
+    extensions.configure<BaseExtension> {
         namespace = "com.hdpornfull"
 
         defaultConfig {
@@ -53,16 +47,16 @@ subprojects {
             sourceCompatibility = JavaVersion.VERSION_1_8
             targetCompatibility = JavaVersion.VERSION_1_8
         }
+    }
 
-        tasks.withType<KotlinJvmCompile> {
-            compilerOptions {
-                jvmTarget.set(JvmTarget.JVM_1_8)
-                freeCompilerArgs.addAll(
-                    "-Xno-call-assertions",
-                    "-Xno-param-assertions",
-                    "-Xno-receiver-assertions"
-                )
-            }
+    tasks.withType<KotlinJvmCompile> {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_1_8)
+            freeCompilerArgs.addAll(
+                "-Xno-call-assertions",
+                "-Xno-param-assertions",
+                "-Xno-receiver-assertions"
+            )
         }
     }
 
