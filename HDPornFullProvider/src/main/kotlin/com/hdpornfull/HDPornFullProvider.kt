@@ -21,10 +21,9 @@ class HDPornFullProvider : MainAPI() {
             val poster = item.selectFirst("img")?.attr("data-src") ?: item.selectFirst("img")?.attr("src")
             
             results.add(
-                SearchResponse(
+                newMovieSearchResponse(
                     name = title,
                     url = href,
-                    imageUrl = poster,
                     type = TvType.Movie
                 )
             )
@@ -40,12 +39,13 @@ class HDPornFullProvider : MainAPI() {
         
         val iframeUrl = doc.selectFirst("iframe")?.attr("src")
         
-        return MovieLoadResponse(
+        return newMovieLoadResponse(
             name = title,
             url = url,
             type = TvType.Movie,
             posterUrl = poster,
-            plot = description
+            plot = description,
+            dataUrl = iframeUrl ?: url
         )
     }
     
