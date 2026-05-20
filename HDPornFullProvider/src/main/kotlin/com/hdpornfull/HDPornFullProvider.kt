@@ -1,7 +1,6 @@
 package com.hdpornfull
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.*
 
 class HDPornFullProvider : MainAPI() {
@@ -13,30 +12,10 @@ class HDPornFullProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val hasChromecastSupport = true
     override val vpnStatus = VPNStatus.MightBeNeeded
-    override val usesWebView = true
 
     override val mainPage = mainPageOf(
         "${mainUrl}/" to "Home",
     )
-
-    private fun fetchDocument(url: String): org.jsoup.nodes.Document {
-        // Use WebViewResolver to bypass Cloudflare protection
-        val response = WebViewResolver(
-            url = url,
-            originalUrl = url,
-            script = "document.querySelector('html')?.outerHTML",
-            referer = url,
-            jsInterceptor = """window.addEventListener('DOMContentLoaded', () => { 
-                const check = setInterval(() => { 
-                    if (!document.title.includes('Just a moment')) { 
-                        clearInterval(check); 
-                    } 
-                }, 500); 
-            });"""
-        ).resolve()
-        
-        return app.get(url, referer = mainUrl).document
-    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data, referer = mainUrl).document
