@@ -31,7 +31,9 @@ jobs:
           path: "builds"
       
       - name: Clean old builds
-        run: rm $GITHUB_WORKSPACE/builds/*.cs3
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/builds"
+          rm -f "$GITHUB_WORKSPACE/builds"/*.cs3
 
       - name: Setup JDK 17
         uses: actions/setup-java@v1
@@ -43,15 +45,17 @@ jobs:
 
       - name: Build Plugins
         run: |
-          cd $GITHUB_WORKSPACE/src
+          cd "$GITHUB_WORKSPACE/src"
           chmod +x gradlew
-          ./gradlew make makePluginsJson
-          cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
-          cp build/plugins.json $GITHUB_WORKSPACE/builds
+          ./gradlew make makePluginsJson || ./gradlew makePluginsJson
+          cp -f HDPornFullProvider/build/libs/*.cs3 "$GITHUB_WORKSPACE/builds/" 2>/dev/null || true
+          cp -f build/libs/*.cs3 "$GITHUB_WORKSPACE/builds/" 2>/dev/null || true
+          cp -f build/plugins.json "$GITHUB_WORKSPACE/builds/" 2>/dev/null || true
 
       - name: Push builds
         run: |
-          cd $GITHUB_WORKSPACE/builds
+          cd "$GITHUB_WORKSPACE/builds"
+          ls -la
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           git add .
