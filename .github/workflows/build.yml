@@ -1,9 +1,6 @@
 name: Build
 
-permissions:
-  contents: write
-
-concurrency: 
+concurrency:
   group: "build"
   cancel-in-progress: true
 
@@ -29,11 +26,9 @@ jobs:
         with:
           ref: "builds"
           path: "builds"
-      
+
       - name: Clean old builds
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/builds"
-          rm -f "$GITHUB_WORKSPACE/builds"/*.cs3
+        run: rm $GITHUB_WORKSPACE/builds/*.cs3 || true
 
       - name: Setup JDK 17
         uses: actions/setup-java@v1
@@ -45,17 +40,15 @@ jobs:
 
       - name: Build Plugins
         run: |
-          cd "$GITHUB_WORKSPACE/src"
+          cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
-          ./gradlew make makePluginsJson || ./gradlew makePluginsJson
-          cp -f HDPornFullProvider/build/libs/*.cs3 "$GITHUB_WORKSPACE/builds/" 2>/dev/null || true
-          cp -f build/libs/*.cs3 "$GITHUB_WORKSPACE/builds/" 2>/dev/null || true
-          cp -f build/plugins.json "$GITHUB_WORKSPACE/builds/" 2>/dev/null || true
+          ./gradlew make makePluginsJson
+          cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
+          cp build/plugins.json $GITHUB_WORKSPACE/builds
 
       - name: Push builds
         run: |
-          cd "$GITHUB_WORKSPACE/builds"
-          ls -la
+          cd $GITHUB_WORKSPACE/builds
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           git add .

@@ -9,7 +9,7 @@ version = 1
 cloudstream {
     description = "HDPornFull - Adult streaming provider"
     authors = listOf("aicurv")
-    
+
     /**
      * Status int as one of the following:
      * 0: Down
@@ -18,13 +18,13 @@ cloudstream {
      * 3: Beta-only
      */
     status = 1
-    
+
     tvTypes = listOf("Movie")
-    
+
     requiresResources = false
-    
+
     language = "en"
-    
+
     iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
 }
 

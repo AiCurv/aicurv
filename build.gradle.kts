@@ -12,7 +12,7 @@ buildscript {
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
-        classpath("com.github.recloudstream:gradle:c4ccc5d351")
+        classpath("com.github.recloudstream:gradle:-SNAPSHOT")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0")
     }
 }
@@ -25,43 +25,61 @@ allprojects {
     }
 }
 
-configure<CloudstreamExtension> {
-    namespace = "com.hdpornfull"
-    compileSdk = 35
+fun Project.cloudstream(configuration: CloudstreamExtension.() -> Unit) =
+    extensions.getByName("cloudstream").configuration()
 
-    sourceSets["main"].setMirrored(true)
-}
-
-tasks.withType<KotlinJvmCompile> {
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-}
+fun Project.android(configuration: BaseExtension.() -> Unit) =
+    extensions.getByName("android").configuration()
 
 subprojects {
     apply(plugin = "com.android.library")
     apply(plugin = "kotlin-android")
+    apply(plugin = "com.lagradost.cloudstream3.gradle")
 
-    configure<BaseExtension> {
-        namespace = project.namespace
-        compileSdkVersion(35)
+    cloudstream {
+        setRepo(System.getenv("GITHUB_REPOSITORY") ?: "AiCurv/aicurv")
+    }
+
+    android {
+        namespace = "com.hdpornfull"
 
         defaultConfig {
             minSdk = 21
             compileSdkVersion(35)
+            targetSdk = 35
         }
 
         compileOptions {
-            sourceCompatibility = JavaVersion.VERSION_17
-            targetCompatibility = JavaVersion.VERSION_17
+            sourceCompatibility = JavaVersion.VERSION_1_8
+            targetCompatibility = JavaVersion.VERSION_1_8
         }
 
-        kotlinOptions {
-            jvmTarget = "17"
+        tasks.withType<KotlinJvmCompile> {
+            compilerOptions {
+                jvmTarget.set(JvmTarget.JVM_1_8)
+                freeCompilerArgs.addAll(
+                    "-Xno-call-assertions",
+                    "-Xno-param-assertions",
+                    "-Xno-receiver-assertions"
+                )
+            }
         }
+    }
+
+    dependencies {
+        val cloudstream by configurations
+        val implementation by configurations
+
+        // Stubs for all cloudstream classes (Plugin, MainAPI, etc.)
+        cloudstream("com.lagradost:cloudstream3:pre-release")
+
+        implementation(kotlin("stdlib"))
+        implementation("com.github.Blatzar:NiceHttp:0.4.11")
+        implementation("org.jsoup:jsoup:1.18.3")
+        implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.13.1")
     }
 }
 
-task<Delete>("clean") {
+task("clean") {
     delete(rootProject.layout.buildDirectory)
 }
