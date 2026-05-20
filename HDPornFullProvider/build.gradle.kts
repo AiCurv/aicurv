@@ -7,7 +7,7 @@ dependencies {
 version = 1
 
 cloudstream {
-    description = "HDPornFull - Adult streaming provider"
+    description = "HDPornFull - Full length HD adult streaming"
     authors = listOf("aicurv")
 
     /**
@@ -19,13 +19,14 @@ cloudstream {
      */
     status = 1
 
-    tvTypes = listOf("Movie")
+    // MUST be NSFW for adult content to show up in the provider list
+    tvTypes = listOf("NSFW")
 
     requiresResources = false
 
     language = "en"
 
-    iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
+    iconUrl = "https://www.google.com/s2/favicons?domain=hdpornfull.com&sz=%size%"
 }
 
 android {
