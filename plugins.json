@@ -1,0 +1,22 @@
+[
+    {
+        "iconUrl": "https://www.google.com/s2/favicons?domain=xxdbx.com&sz=%size%",
+        "fileHash": "sha256-0f9a350a66b7c5d1facbbfc1e344dfdf8aacc7aaaacef84b4dc63f7f18a49fd7",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/AiCurv/aicurv",
+        "fileSize": 13000,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "aicurv"
+        ],
+        "tvTypes": [
+            "NSFW"
+        ],
+        "version": 2,
+        "internalName": "XXDBXProvider",
+        "description": "XXDBX - Adult video database with MP4 streaming",
+        "url": "https://raw.githubusercontent.com/AiCurv/aicurv/builds/XXDBXProvider.cs3",
+        "name": "XXDBXProvider"
+    }
+]
