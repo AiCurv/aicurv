@@ -13,8 +13,30 @@ class XXDBXProvider : MainAPI() {
     override val hasChromecastSupport = true
 
     override val mainPage = mainPageOf(
-        "$mainUrl/" to "Newest Videos",
+        "$mainUrl/" to "Newest",
         "$mainUrl/most-popular" to "Most Popular",
+        "$mainUrl/search/MILF" to "MILF",
+        "$mainUrl/search/teen" to "Teen",
+        "$mainUrl/search/anal" to "Anal",
+        "$mainUrl/search/lesbian" to "Lesbian",
+        "$mainUrl/search/big-tits" to "Big Tits",
+        "$mainUrl/search/ebony" to "Ebony",
+        "$mainUrl/search/creampie" to "Creampie",
+        "$mainUrl/search/asian" to "Asian",
+        "$mainUrl/search/interracial" to "Interracial",
+        "$mainUrl/search/threesome" to "Threesome",
+        "$mainUrl/search/POV" to "POV",
+        "$mainUrl/search/step" to "Step",
+        "$mainUrl/search/amateur" to "Amateur",
+        "$mainUrl/search/massage" to "Massage",
+        "$mainUrl/channels/LegalPorno.com" to "LegalPorno",
+        "$mainUrl/channels/Brazzers" to "Brazzers",
+        "$mainUrl/channels/Vixen.com" to "Vixen",
+        "$mainUrl/channels/Tushy.com" to "Tushy",
+        "$mainUrl/channels/EvilAngel.com" to "Evil Angel",
+        "$mainUrl/channels/OnlyFans.com" to "OnlyFans",
+        "$mainUrl/channels/Deeper.com" to "Deeper",
+        "$mainUrl/channels/Mofos.com" to "Mofos",
     )
 
     private fun String.fixUrl(): String {
@@ -61,7 +83,11 @@ class XXDBXProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search/${java.net.URLEncoder.encode(query, "UTF-8")}"
+        // xxdbx uses dashes between words in search URLs
+        // Spaces and + signs don't work, so we replace spaces with dashes
+        val searchQuery = query.trim()
+            .replace("\s+".toRegex(), "-")
+        val searchUrl = "$mainUrl/search/$searchQuery"
         val document = app.get(searchUrl).document
 
         return document.select("div.v").mapNotNull { parseVideoCard(it) }
@@ -81,14 +107,23 @@ class XXDBXProvider : MainAPI() {
 
         val description = document.selectFirst("#desc")?.text()?.trim()
 
+        // Tags from video page - these are clickable on the website
+        // In Cloudstream they're display-only (app limitation)
         val tags = document.select("div.tags a[href*=/search/]").mapNotNull {
             it.text()?.trim()
         }.filter { it.isNotEmpty() }
+
+        // Stars/Actors from the video page
+        val actors = document.select("div.tags a[href*=/stars/]").mapNotNull {
+            val starName = it.text()?.trim() ?: return@mapNotNull null
+            ActorData(Actor(starName))
+        }
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
+            addActors(actors)
         }
     }
 
@@ -126,7 +161,8 @@ class XXDBXProvider : MainAPI() {
             }
         }
 
-        document.select("iframe[src]").forEach { iframe ->
+        val iframeQuery = "iframe[src]"
+        document.select(iframeQuery).forEach { iframe ->
             val iframeSrc = iframe.attr("abs:src").ifEmpty { iframe.attr("src") }
             if (iframeSrc.isNotEmpty()) {
                 loadExtractor(iframeSrc.fixUrl(), data, subtitleCallback, callback)
