@@ -35,7 +35,7 @@ subprojects {
     }
 
     extensions.configure<BaseExtension> {
-        namespace = "com.hdpornfull"
+        namespace = "com.xxdbx"
 
         defaultConfig {
             minSdk = 21

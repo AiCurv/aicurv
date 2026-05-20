@@ -4,10 +4,10 @@ dependencies {
 }
 
 // Use an integer for version numbers
-version = 2
+version = 1
 
 cloudstream {
-    description = "HDPornFull - Full length HD adult streaming"
+    description = "XXDBX - Adult video database with MP4 streaming"
     authors = listOf("aicurv")
 
     /**
@@ -19,14 +19,14 @@ cloudstream {
      */
     status = 1
 
-    // MUST be NSFW for adult content to show up in the provider list
+    // MUST be NSFW for adult content to show up in the 18+ provider list
     tvTypes = listOf("NSFW")
 
     requiresResources = false
 
     language = "en"
 
-    iconUrl = "https://www.google.com/s2/favicons?domain=hdpornfull.com&sz=%size%"
+    iconUrl = "https://www.google.com/s2/favicons?domain=xxdbx.com&sz=%size%"
 }
 
 android {

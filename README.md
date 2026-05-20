@@ -1,13 +1,13 @@
 # aicurv Cloudstream Extension Repository
 
-HDPornFull provider for Cloudstream Android app.
+XXDBX provider for Cloudstream Android app.
 
 ## Installation
 
 1. Open Cloudstream app
 2. Go to Settings > Extensions > Add Repository
-3. Add this URL: `https://raw.githubusercontent.com/aicurv/aicurv/master/repo.json`
-4. Or use the shortcode: `aicurv`
+3. Add this URL: `https://github.com/AiCurv/aicurv/raw/main/repo.json`
+4. Install the XXDBX extension from the repository
 
 ## Building
 
