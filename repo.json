@@ -1,0 +1,8 @@
+{
+  "name": "aicurv Cloudstream Repository",
+  "description": "HDPornFull extension for Cloudstream",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/aicurv/aicurv/builds/plugins.json"
+  ]
+}
