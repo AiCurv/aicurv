@@ -21,11 +21,11 @@ class HDPornFullProvider : MainAPI() {
             val poster = item.selectFirst("img")?.attr("data-src") ?: item.selectFirst("img")?.attr("src")
             
             results.add(
-                newMovieSearchResponse(
+                SearchResponse(
                     name = title,
                     url = href,
-                    type = TvType.Movie,
-                    posterUrl = poster
+                    imageUrl = poster,
+                    type = TvType.Movie
                 )
             )
         }
@@ -40,26 +40,27 @@ class HDPornFullProvider : MainAPI() {
         
         val iframeUrl = doc.selectFirst("iframe")?.attr("src")
         
-        return newMovieLoadResponse(
+        return MovieLoadResponse(
             name = title,
             url = url,
             type = TvType.Movie,
             posterUrl = poster,
-            plot = description,
-            dataUrl = iframeUrl ?: url
+            plot = description
         )
     }
     
-    override suspend fun loadLinks(data: String, isCasting: Boolean, callback: LoadCallback) {
+    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
         val doc = app.get(data).document
         val videoSrc = doc.selectFirst("video source")?.attr("src")
         if (videoSrc != null) {
             callback(
                 ExtractorLink(
                     source = name,
-                    quality = "HD",
+                    name = name,
                     url = videoSrc,
-                    type = CINEMA_TYPE.HLS
+                    referer = "",
+                    quality = Qualities.HD.value,
+                    type = ExtractorLinkType.VIDEO
                 )
             )
         }
