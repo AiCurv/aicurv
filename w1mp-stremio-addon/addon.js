@@ -10,7 +10,7 @@ const HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 };
 
-// ─── Simple in-memory cache (5 min TTL) ─────────────────────────────
+// ─── Cache (5 min TTL) ─────────────────────────────────────────────
 
 const cache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
@@ -19,7 +19,6 @@ async function cachedFetch(url) {
     const now = Date.now();
     const cached = cache.get(url);
     if (cached && now - cached.ts < CACHE_TTL) return cached.html;
-
     const res = await fetch(url, { headers: HEADERS, timeout: 15000 });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     const html = await res.text();
@@ -36,12 +35,21 @@ function fixUrl(url) {
     return url;
 }
 
-function parseVideoCard(el) {
-    const $ = el;
-    let linkEl = $.find("a.custom-preview-block-video-wrap").first();
-    if (!linkEl.length) {
-        linkEl = $.find("a[href*='/video/']").first();
-    }
+// Generate a plausible ISO date from a video ID (higher ID = more recent)
+// KVS sites use auto-incrementing IDs, so higher = newer
+// Calibrated: ID ~500000 ≈ May 2026, ID ~1 ≈ Jan 2020
+function videoIdToDate(videoId) {
+    const id = parseInt(videoId);
+    const baseDate = new Date("2020-01-01").getTime();
+    const msPerId = (6.4 * 365.25 * 24 * 60 * 60 * 1000) / 500000;
+    const date = new Date(baseDate + id * msPerId);
+    return date.toISOString();
+}
+
+// ─── Video Card Parser ─────────────────────────────────────────────
+
+function parseVideoCard(el, $) {
+    let linkEl = el.find("a[href*='/video/']").first();
     if (!linkEl.length) return null;
 
     const href = linkEl.attr("href") || "";
@@ -49,47 +57,30 @@ function parseVideoCard(el) {
     if (!videoMatch) return null;
     const videoId = videoMatch[1];
 
-    const title = $.find(".card-meta .title").first().text().trim();
+    const title = el.find(".card-meta .title, .title").first().text().trim();
     if (!title) return null;
 
-    const img = $.find(".card-img img").first();
-    const poster = fixUrl(
-        img.attr("data-webp") || img.attr("src") || ""
-    );
+    const img = el.find(".card-img img").first();
+    const poster = fixUrl(img.attr("data-webp") || img.attr("src") || "");
 
-    const badgeEl = $.find(".badges .badge").first();
+    const badgeEl = el.find(".badges .badge").first();
     const badgeText = badgeEl.text().trim();
     const isHD = badgeEl.find(".hd-badge").length > 0;
     const durationMatch = badgeText.match(/(\d+:\d+)/);
     const duration = durationMatch ? durationMatch[1] : "";
 
-    const preview = fixUrl(img.attr("data-preview") || "");
-
-    const modelEl = $.find(".item-tool.model a").first();
+    const modelEl = el.find(".item-tool.model a").first();
     const modelName = modelEl.text().trim();
     const modelHref = modelEl.attr("href") || "";
     const modelSlugMatch = modelHref.match(/\/models\/([^/]+)\/?/);
     const modelSlug = modelSlugMatch ? modelSlugMatch[1] : "";
 
-    // Extract model avatar from card if available
-    const modelAvatarEl = $.find(".card-model-avatar img").first();
-    const modelAvatar = modelAvatarEl.length ? fixUrl(modelAvatarEl.attr("src") || "") : "";
-
-    const viewsEl = $.find(".info-item .item-tool").last();
+    const viewsEl = el.find(".info-item .item-tool").last();
     const views = viewsEl.text().trim();
 
     return {
-        videoId,
-        title,
-        poster,
-        duration,
-        isHD,
-        preview,
-        modelName,
-        modelSlug,
-        modelAvatar,
-        views,
-        href: fixUrl(href),
+        videoId, title, poster, duration, isHD,
+        modelName, modelSlug, views, href: fixUrl(href),
     };
 }
 
@@ -97,11 +88,13 @@ function extractVideoCards(html) {
     const $ = cheerio.load(html);
     const videos = [];
     $(".card.item").each((_, el) => {
-        const card = parseVideoCard($(el));
+        const card = parseVideoCard($(el), $);
         if (card) videos.push(card);
     });
     return videos;
 }
+
+// ─── Model Card Parser ─────────────────────────────────────────────
 
 function extractModelCards(html) {
     const $ = cheerio.load(html);
@@ -123,46 +116,94 @@ function extractModelCards(html) {
     return models;
 }
 
-// ─── Model avatar cache (slug → poster URL) ─────────────────────────
+// ─── Video Page Data Extractor ──────────────────────────────────────
+// Extracts models, categories, and tags from a full video page
 
-const modelAvatarCache = new Map();
+function extractVideoPageLinks(html) {
+    const $ = cheerio.load(html);
 
-async function getModelPoster(slug) {
-    if (modelAvatarCache.has(slug)) return modelAvatarCache.get(slug);
+    const models = [];
+    const categories = [];
+    const tags = [];
 
-    // Try fetching models page and find this model's avatar
-    try {
-        const html = await cachedFetch(`${BASE_URL}/models/`);
-        const models = extractModelCards(html);
-        for (const m of models) {
-            if (m.poster) modelAvatarCache.set(m.slug, m.poster);
+    // Models from js-models-list (yellow tags — these are the model tags)
+    const modelSlugs = new Set();
+    $(".js-models-list a[href*='/models/']").each((_, el) => {
+        const href = $(el).attr("href") || "";
+        const slugMatch = href.match(/\/models\/([^/]+)\/?/);
+        const name = $(el).text().trim();
+        if (slugMatch && name) {
+            const slug = slugMatch[1];
+            if (!modelSlugs.has(slug)) {
+                modelSlugs.add(slug);
+                models.push({ slug, name });
+            }
         }
-        if (modelAvatarCache.has(slug)) return modelAvatarCache.get(slug);
-    } catch (e) {}
+    });
 
-    // Fallback: try the CDN URL pattern (works for some models)
-    // We don't know the model_id, so we can't construct the exact URL
-    // Use a generic placeholder
-    return "";
+    // Also check video cards below for additional models (deduplicated)
+    $(".item-tool.model a[href*='/models/']").each((_, el) => {
+        const href = $(el).attr("href") || "";
+        const slugMatch = href.match(/\/models\/([^/]+)\/?/);
+        const name = $(el).text().trim();
+        if (slugMatch && name) {
+            const slug = slugMatch[1];
+            if (!modelSlugs.has(slug)) {
+                modelSlugs.add(slug);
+                models.push({ slug, name });
+            }
+        }
+    });
+
+    // Categories from top-player-items-wrap (gray tags with /categories/ href)
+    $(".top-player-items-wrap a[href*='/categories/']").each((_, el) => {
+        const href = $(el).attr("href") || "";
+        const slugMatch = href.match(/\/categories\/([^/]+)\/?/);
+        const name = $(el).text().trim();
+        if (slugMatch && name) {
+            const slug = slugMatch[1];
+            if (!categories.find(c => c.slug === slug)) {
+                categories.push({ slug, name });
+            }
+        }
+    });
+
+    // Tags from top-player-items-wrap (gray tags with /tags/ href)
+    $(".top-player-items-wrap a[href*='/tags/']").each((_, el) => {
+        const href = $(el).attr("href") || "";
+        const slugMatch = href.match(/\/tags\/([^/]+)\/?/);
+        const name = $(el).text().trim();
+        if (slugMatch && name) {
+            const slug = slugMatch[1];
+            if (!tags.find(t => t.slug === slug)) {
+                tags.push({ slug, name });
+            }
+        }
+    });
+
+    // Extract video poster from og:image
+    const poster = $("meta[property='og:image']").attr("content") || "";
+
+    return { models, categories, tags, poster };
 }
 
 // ─── Manifest ───────────────────────────────────────────────────────
 
 const manifest = {
     id: "community.w1mp",
-    version: "2.1.0",
+    version: "3.0.0",
     name: "W1MP",
-    description: "Browse models, categories, and videos from w1mp.com. Add model pages to your library!",
+    description: "Browse models, tags, categories, and videos from w1mp.com. Add model/tag pages to your library!",
     logo: "https://www.google.com/s2/favicons?domain=w1mp.com&sz=256",
     background: "https://cdnstatic.w1mp.com/static/images/logo.png",
     resources: [
         "catalog",
-        { name: "meta", types: ["channel", "movie"], idPrefixes: ["model_", "video_"] },
-        { name: "stream", types: ["channel", "movie"], idPrefixes: ["video_"] },
+        { name: "meta", types: ["channel", "movie"], idPrefixes: ["model_", "video_", "tag_", "cat_"] },
+        { name: "stream", types: ["movie"], idPrefixes: ["video_"] },
     ],
     types: ["channel", "movie"],
     catalogs: [
-        // ── CHANNEL TYPE: Models (creates dedicated "Channels" section in Stremio) ──
+        // ── CHANNEL TYPE: Models ──
         {
             type: "channel",
             id: "models",
@@ -172,38 +213,21 @@ const manifest = {
                 { name: "skip", isRequired: false },
             ],
         },
-        // ── MOVIE TYPE: Searchable video catalog ──
+        // ── CHANNEL TYPE: Tags ──
+        {
+            type: "channel",
+            id: "tags",
+            name: "Tags",
+            extra: [
+                { name: "search", isRequired: false },
+            ],
+        },
+        // ── MOVIE TYPE: Video Search ──
         {
             type: "movie",
             id: "video_search",
             name: "Video Search",
-            extra: [
-                { name: "search", isRequired: true }, // search-only catalog
-            ],
-        },
-        // ── MOVIE TYPE: Category browsing ──
-        {
-            type: "movie",
-            id: "categories",
-            name: "Categories",
-            extra: [
-                { name: "genre", isRequired: false, options: [
-                    "Amateur", "Anal", "Arab", "Asian", "Babe", "BBW",
-                    "Behind The Scenes", "Big Ass", "Big Dick", "Big Tits",
-                    "Blonde", "Blowjob", "Bondage", "Brazilian", "British",
-                    "Brunette", "Bukkake", "Casting", "Compilation", "Cosplay",
-                    "Creampie", "Cuckold", "Cumshot", "Czech", "Double Penetration",
-                    "Ebony", "Euro", "Facial", "Feet", "Female Orgasm", "Fetish",
-                    "Fisting", "French", "Gangbang", "German", "Hairy", "Handjob",
-                    "Hardcore", "Hentai", "Interracial", "Italian", "Japanese",
-                    "Latina", "Lesbian", "Massage", "Masturbation", "Mature",
-                    "MILF", "Old Young", "Orgy", "POV", "Public", "Reality",
-                    "Red Head", "Role Play", "Romantic", "Rough Sex", "Russian",
-                    "School", "Solo Female", "Squirt", "Step Fantasy", "Strap On",
-                    "Striptease", "Teen", "Threesome", "Toys", "Vintage"
-                ] },
-                { name: "skip", isRequired: false },
-            ],
+            extra: [{ name: "search", isRequired: true }],
         },
         // ── MOVIE TYPE: Browse catalogs ──
         {
@@ -224,8 +248,34 @@ const manifest = {
             name: "Most Popular",
             extra: [{ name: "skip", isRequired: false }],
         },
+        // ── MOVIE TYPE: Categories (browsable with genre filter) ──
+        {
+            type: "movie",
+            id: "categories",
+            name: "Categories",
+            extra: [
+                {
+                    name: "genre", isRequired: false, options: [
+                        "Amateur", "Anal", "Arab", "Asian", "Babe", "BBW",
+                        "Behind The Scenes", "Big Ass", "Big Dick", "Big Tits",
+                        "Blonde", "Blowjob", "Bondage", "Brazilian", "British",
+                        "Brunette", "Bukkake", "Casting", "Compilation", "Cosplay",
+                        "Creampie", "Cuckold", "Cumshot", "Czech", "Double Penetration",
+                        "Ebony", "Euro", "Facial", "Feet", "Female Orgasm", "Fetish",
+                        "Fisting", "French", "Gangbang", "German", "Hairy", "Handjob",
+                        "Hardcore", "Hentai", "Interracial", "Italian", "Japanese",
+                        "Latina", "Lesbian", "Massage", "Masturbation", "Mature",
+                        "MILF", "Old Young", "Orgy", "POV", "Public", "Reality",
+                        "Red Head", "Role Play", "Romantic", "Rough Sex", "Russian",
+                        "School", "Solo Female", "Squirt", "Step Fantasy", "Strap On",
+                        "Striptease", "Teen", "Threesome", "Toys", "Vintage"
+                    ]
+                },
+                { name: "skip", isRequired: false },
+            ],
+        },
     ],
-    idPrefixes: ["model_", "video_"],
+    idPrefixes: ["model_", "video_", "tag_", "cat_"],
     behaviorHints: {
         adult: true,
         p2p: false,
@@ -268,7 +318,7 @@ const CATEGORY_SLUG_MAP = {
 
 builder.defineCatalogHandler(async (args) => {
     const skip = parseInt(args.extra?.skip || "0");
-    const page = Math.floor(skip / 40) + 1; // ~40 items per page
+    const page = Math.floor(skip / 40) + 1;
 
     try {
         // ── Models catalog (channel type, searchable) ──
@@ -276,8 +326,6 @@ builder.defineCatalogHandler(async (args) => {
             if (args.extra?.search) {
                 const query = args.extra.search;
                 const queryLower = query.toLowerCase();
-
-                // Strategy: Search the site, extract unique models from video results
                 const searchUrl = `${BASE_URL}/search/?q=${encodeURIComponent(query)}`;
                 const html = await cachedFetch(searchUrl);
                 const videos = extractVideoCards(html);
@@ -287,22 +335,18 @@ builder.defineCatalogHandler(async (args) => {
                 for (const v of videos) {
                     if (v.modelSlug) {
                         if (!modelMap[v.modelSlug]) {
-                            modelMap[v.modelSlug] = { name: v.modelName, avatar: v.modelAvatar };
-                        }
-                        // Update avatar if we find one
-                        if (v.modelAvatar && !modelMap[v.modelSlug].avatar) {
-                            modelMap[v.modelSlug].avatar = v.modelAvatar;
+                            modelMap[v.modelSlug] = { name: v.modelName, slug: v.modelSlug };
                         }
                     }
                 }
 
-                const metas = Object.entries(modelMap).map(([slug, data]) => ({
-                    id: `model_${slug}`,
+                const metas = Object.values(modelMap).map(m => ({
+                    id: `model_${m.slug}`,
                     type: "channel",
-                    name: data.name,
-                    poster: data.avatar || "",
+                    name: m.name,
+                    poster: "",
                     posterShape: "poster",
-                    description: `${data.name} — model page on W1MP`,
+                    description: `${m.name} — model page on W1MP`,
                 }));
 
                 // Sort: models whose name matches the query come FIRST
@@ -332,6 +376,63 @@ builder.defineCatalogHandler(async (args) => {
 
                 return { metas };
             }
+        }
+
+        // ── Tags catalog (channel type, searchable) ──
+        if (args.id === "tags" && args.type === "channel") {
+            if (args.extra?.search) {
+                const query = args.extra.search;
+                const searchUrl = `${BASE_URL}/search/?q=${encodeURIComponent(query)}`;
+                const html = await cachedFetch(searchUrl);
+
+                // Get the full video page for the first result to extract tags
+                const $ = cheerio.load(html);
+                const firstVideoHref = $("a[href*='/video/']").first().attr("href");
+                let tagMetas = [];
+
+                if (firstVideoHref) {
+                    const fullUrl = fixUrl(firstVideoHref);
+                    try {
+                        const videoHtml = await cachedFetch(fullUrl);
+                        const data = extractVideoPageLinks(videoHtml);
+
+                        // Return tags as channel items
+                        tagMetas = data.tags.map(t => ({
+                            id: `tag_${t.slug}`,
+                            type: "channel",
+                            name: t.name,
+                            poster: "",
+                            posterShape: "poster",
+                            description: `Browse "${t.name}" tag on W1MP`,
+                        }));
+                    } catch (e) {}
+                }
+
+                // Also search the tags page directly
+                try {
+                    const tagUrl = `${BASE_URL}/tags/${encodeURIComponent(query.toLowerCase().replace(/\s+/g, "-"))}/`;
+                    const tagHtml = await cachedFetch(tagUrl);
+                    const t$ = cheerio.load(tagHtml);
+                    const count = t$(".card.item").length;
+                    if (count > 0) {
+                        const slug = query.toLowerCase().replace(/\s+/g, "-");
+                        // Don't add duplicate
+                        if (!tagMetas.find(t => t.id === `tag_${slug}`)) {
+                            tagMetas.unshift({
+                                id: `tag_${slug}`,
+                                type: "channel",
+                                name: query,
+                                poster: "",
+                                posterShape: "poster",
+                                description: `${count} videos tagged "${query}"`,
+                            });
+                        }
+                    }
+                } catch (e) {}
+
+                return { metas: tagMetas };
+            }
+            return { metas: [] };
         }
 
         // ── Video Search catalog (movie type, search-only) ──
@@ -376,7 +477,7 @@ builder.defineCatalogHandler(async (args) => {
                     const img = $el.find("img").first();
                     const poster = fixUrl(img.attr("src") || "");
                     metas.push({
-                        id: `category_${slug}`,
+                        id: `cat_${slug}`,
                         type: "movie",
                         name: name,
                         poster: poster,
@@ -431,46 +532,65 @@ builder.defineMetaHandler(async (args) => {
     const { id, type } = args;
 
     try {
-        // ── Model meta (channel type — shows video list) ──
+        // ── Model meta (channel type) ──
         if (type === "channel" && id.startsWith("model_")) {
             const slug = id.replace("model_", "");
-            const modelUrl = `${BASE_URL}/models/${slug}/`;
+            // Sort by newest first using ?sort_by=post_date
+            const modelUrl = `${BASE_URL}/models/${slug}/?sort_by=post_date`;
             const html = await cachedFetch(modelUrl);
             const $ = cheerio.load(html);
 
-            const name = $(".viewlist-headline .title").first().text().trim() || slug;
+            const name = $(".viewlist-headline .title").first().text().trim() || slug.replace(/-/g, " ");
             const desc = $(".viewlist-description").first().text().trim();
             const stats = $(".viewlist-headline .statistic-list .item").map((_, el) => $(el).text().trim()).get();
             const videoCount = stats[0] || "";
             const rating = stats[1] || "";
 
-            // Try to find model avatar from the page
-            const modelPageImg = $(".posted img, .about-hold img").first().attr("src");
-            const modelPoster = modelPageImg ? fixUrl(modelPageImg) : await getModelPoster(slug);
+            // Try to find model poster from the page
+            let modelPoster = "";
+            // Check header/about section for model image
+            $(".about-hold img, .viewlist-headline img, .model-info img, .posted img").each((_, el) => {
+                const src = $(el).attr("src") || "";
+                if (src && !modelPoster) {
+                    modelPoster = fixUrl(src);
+                }
+            });
 
-            // Extract ALL videos from this model's pages
+            // If no poster found on page, try constructing CDN URL
+            if (!modelPoster) {
+                // Look for model images in video cards (model avatars)
+                $(".card-model-avatar img").each((_, el) => {
+                    const src = $(el).attr("src") || "";
+                    const alt = $(el).attr("alt") || "";
+                    if (src && (alt.toLowerCase().includes(name.toLowerCase()) || !modelPoster)) {
+                        modelPoster = fixUrl(src);
+                    }
+                });
+            }
+
+            // Extract ALL videos from this model's pages (sorted by date)
             const videos = [];
             const seenIds = new Set();
 
-            // Fetch up to 5 pages of videos for the model
+            // Fetch up to 5 pages of videos
             for (let p = 1; p <= 5; p++) {
                 try {
                     const pUrl = p > 1
-                        ? `${BASE_URL}/models/${slug}/${p}/`
-                        : `${BASE_URL}/models/${slug}/`;
+                        ? `${BASE_URL}/models/${slug}/${p}/?sort_by=post_date`
+                        : `${BASE_URL}/models/${slug}/?sort_by=post_date`;
                     const pHtml = await cachedFetch(pUrl);
                     const p$ = cheerio.load(pHtml);
 
                     let pageHasVideos = false;
                     p$(".card.item").each((_, el) => {
-                        const card = parseVideoCard(p$(el));
+                        const card = parseVideoCard(p$(el), p$);
                         if (card && !seenIds.has(card.videoId)) {
                             seenIds.add(card.videoId);
                             const dirPrefix = Math.floor(parseInt(card.videoId) / 1000) * 1000;
                             videos.push({
                                 id: `video_${card.videoId}`,
                                 title: card.title,
-                                released: new Date().toISOString(),
+                                released: videoIdToDate(card.videoId),
                                 thumbnail: card.poster || `${CDN_STATIC}/contents/videos_screenshots/${dirPrefix}/${card.videoId}/672x378/1.jpg`,
                                 overview: `${card.duration || ""}${card.isHD ? " HD" : ""}${card.views ? " | " + card.views : ""}`,
                             });
@@ -478,7 +598,7 @@ builder.defineMetaHandler(async (args) => {
                         }
                     });
 
-                    if (!pageHasVideos) break; // No more pages
+                    if (!pageHasVideos) break;
                 } catch (e) { break; }
             }
 
@@ -490,10 +610,117 @@ builder.defineMetaHandler(async (args) => {
                 posterShape: "poster",
                 background: modelPoster,
                 description: desc || `${name}${videoCount ? " — " + videoCount : ""}${rating ? " | Rating: " + rating : ""}`,
-                releaseInfo: "",
+                releaseInfo: videoCount,
                 genres: ["Model"],
                 videos: videos,
-                // CRITICAL: NO defaultVideoId — it causes infinite back-loop in Stremio
+                links: [],
+            };
+
+            return { meta };
+        }
+
+        // ── Tag meta (channel type) ──
+        if (type === "channel" && id.startsWith("tag_")) {
+            const slug = id.replace("tag_", "");
+            const tagUrl = `${BASE_URL}/tags/${slug}/`;
+            const html = await cachedFetch(tagUrl);
+            const $ = cheerio.load(html);
+
+            // Get tag name from page title
+            const tagName = $("title").first().text().replace(/-.*/g, "").trim() || slug.replace(/-/g, " ");
+
+            // Extract videos from tag page
+            const videos = [];
+            const seenIds = new Set();
+
+            // Fetch up to 3 pages
+            for (let p = 1; p <= 3; p++) {
+                try {
+                    const pUrl = p > 1
+                        ? `${BASE_URL}/tags/${slug}/${p}/`
+                        : `${BASE_URL}/tags/${slug}/`;
+                    const pHtml = await cachedFetch(pUrl);
+                    const pVideos = extractVideoCards(pHtml);
+                    if (pVideos.length === 0) break;
+
+                    for (const card of pVideos) {
+                        if (!seenIds.has(card.videoId)) {
+                            seenIds.add(card.videoId);
+                            const dirPrefix = Math.floor(parseInt(card.videoId) / 1000) * 1000;
+                            videos.push({
+                                id: `video_${card.videoId}`,
+                                title: card.title,
+                                released: videoIdToDate(card.videoId),
+                                thumbnail: card.poster || `${CDN_STATIC}/contents/videos_screenshots/${dirPrefix}/${card.videoId}/672x378/1.jpg`,
+                                overview: `${card.duration || ""}${card.isHD ? " HD" : ""}${card.views ? " | " + card.views : ""}`,
+                            });
+                        }
+                    }
+                } catch (e) { break; }
+            }
+
+            const meta = {
+                id: id,
+                type: "channel",
+                name: tagName,
+                poster: "",
+                posterShape: "poster",
+                description: `Browse "${tagName}" tag on W1MP — ${videos.length} videos`,
+                genres: ["Tag"],
+                videos: videos,
+                links: [],
+            };
+
+            return { meta };
+        }
+
+        // ── Category meta (channel type) ──
+        if (type === "channel" && id.startsWith("cat_")) {
+            const slug = id.replace("cat_", "");
+            const catUrl = `${BASE_URL}/categories/${slug}/`;
+            const html = await cachedFetch(catUrl);
+            const $ = cheerio.load(html);
+
+            const catName = $("title").first().text().replace(/-.*/g, "").trim() || slug.replace(/-/g, " ");
+
+            const videos = [];
+            const seenIds = new Set();
+
+            for (let p = 1; p <= 3; p++) {
+                try {
+                    const pUrl = p > 1
+                        ? `${BASE_URL}/categories/${slug}/${p}/`
+                        : `${BASE_URL}/categories/${slug}/`;
+                    const pHtml = await cachedFetch(pUrl);
+                    const pVideos = extractVideoCards(pHtml);
+                    if (pVideos.length === 0) break;
+
+                    for (const card of pVideos) {
+                        if (!seenIds.has(card.videoId)) {
+                            seenIds.add(card.videoId);
+                            const dirPrefix = Math.floor(parseInt(card.videoId) / 1000) * 1000;
+                            videos.push({
+                                id: `video_${card.videoId}`,
+                                title: card.title,
+                                released: videoIdToDate(card.videoId),
+                                thumbnail: card.poster || `${CDN_STATIC}/contents/videos_screenshots/${dirPrefix}/${card.videoId}/672x378/1.jpg`,
+                                overview: `${card.duration || ""}${card.isHD ? " HD" : ""}${card.views ? " | " + card.views : ""}`,
+                            });
+                        }
+                    }
+                } catch (e) { break; }
+            }
+
+            const meta = {
+                id: id,
+                type: "channel",
+                name: catName,
+                poster: "",
+                posterShape: "landscape",
+                description: `Browse "${catName}" category on W1MP — ${videos.length} videos`,
+                genres: ["Category"],
+                videos: videos,
+                links: [],
             };
 
             return { meta };
@@ -502,39 +729,78 @@ builder.defineMetaHandler(async (args) => {
         // ── Video meta (movie type) ──
         if (type === "movie" && id.startsWith("video_")) {
             const videoId = id.replace("video_", "");
-            const videoUrl = `${BASE_URL}/embed/${videoId}/`;
-            const html = await cachedFetch(videoUrl);
-            const $ = cheerio.load(html);
 
-            const title = $("meta[property='og:title']").attr("content") || $("title").first().text().trim() || `Video ${videoId}`;
-            const poster = $("video").attr("poster") || "";
-            const description = $("meta[property='og:description']").attr("content") || "";
+            // Step 1: Fetch embed page for basic info + canonical URL
+            const embedUrl = `${BASE_URL}/embed/${videoId}/`;
+            const embedHtml = await cachedFetch(embedUrl);
+            const e$ = cheerio.load(embedHtml);
 
-            const genres = [];
-            const cast = [];
-            $("a[href*='/models/']").each((_, el) => {
-                cast.push({ name: $(el).text().trim() });
-            });
+            const title = e$("meta[property='og:title']").attr("content") || e$("title").first().text().trim() || `Video ${videoId}`;
+            const embedPoster = e$("meta[property='og:image']").attr("content") || "";
+            const description = e$("meta[property='og:description']").attr("content") || "";
+
+            // Build links array — start with what we have from embed
+            const links = [];
+
+            // Step 2: Try to get the full video page for tags/models/categories
+            const canonicalUrl = e$("link[rel='canonical']").attr("href") || "";
+            if (canonicalUrl) {
+                try {
+                    const fullHtml = await cachedFetch(canonicalUrl);
+                    const pageData = extractVideoPageLinks(fullHtml);
+
+                    // Add model links (yellow tags — clickable, navigate to model page)
+                    for (const model of pageData.models) {
+                        links.push({
+                            name: model.name,
+                            category: "Models",
+                            url: `stremio:///detail/channel/model_${model.slug}`,
+                        });
+                    }
+
+                    // Add category links (gray tags — clickable, navigate to category page)
+                    for (const cat of pageData.categories) {
+                        links.push({
+                            name: cat.name,
+                            category: "Categories",
+                            url: `stremio:///detail/channel/cat_${cat.slug}`,
+                        });
+                    }
+
+                    // Add tag links (first 5 gray tags — clickable, navigate to tag page)
+                    const topTags = pageData.tags.slice(0, 5);
+                    for (const tag of topTags) {
+                        links.push({
+                            name: tag.name,
+                            category: "Tags",
+                            url: `stremio:///detail/channel/tag_${tag.slug}`,
+                        });
+                    }
+                } catch (e) {
+                    console.error("Full page fetch failed:", e.message);
+                }
+            }
 
             const meta = {
                 id: id,
                 type: "movie",
                 name: title,
-                poster: fixUrl(poster),
+                poster: fixUrl(embedPoster),
                 posterShape: "landscape",
-                background: fixUrl(poster),
+                background: fixUrl(embedPoster),
                 description: description || title,
                 releaseInfo: "",
-                genres: genres,
-                cast: cast,
+                genres: [],
+                cast: [],
+                links: links,
             };
 
             return { meta };
         }
 
-        // ── Category placeholder meta ──
-        if (type === "movie" && id.startsWith("category_")) {
-            const slug = id.replace("category_", "");
+        // ── Category catalog placeholder (movie type) ──
+        if (type === "movie" && id.startsWith("cat_")) {
+            const slug = id.replace("cat_", "");
             const catUrl = `${BASE_URL}/categories/${slug}/`;
             const html = await cachedFetch(catUrl);
             const videos = extractVideoCards(html);
@@ -550,9 +816,10 @@ builder.defineMetaHandler(async (args) => {
                 videos: videos.slice(0, 100).map(v => ({
                     id: `video_${v.videoId}`,
                     title: v.title,
-                    released: new Date().toISOString(),
+                    released: videoIdToDate(v.videoId),
                     thumbnail: v.poster,
                 })),
+                links: [],
             };
 
             return { meta };
@@ -571,7 +838,6 @@ builder.defineStreamHandler(async (args) => {
     const { id, type } = args;
 
     try {
-        // ── Stream for individual video (from video catalog or channel video list) ──
         if (id.startsWith("video_")) {
             const videoId = id.replace("video_", "");
             const streams = [];
@@ -597,12 +863,8 @@ builder.defineStreamHandler(async (args) => {
             return { streams };
         }
 
-        // ── Stream for model page (channel type) ──
-        // NOTE: Stremio doesn't request streams for the channel meta itself.
-        // It requests streams for individual videos in the channel's video list.
-        // Those use the video_ prefix handler above.
-        // If somehow requested, return empty — the user should click a video from the list.
-        if (id.startsWith("model_")) {
+        // Channel types don't have streams — user clicks a video from the list
+        if (id.startsWith("model_") || id.startsWith("tag_") || id.startsWith("cat_")) {
             return { streams: [] };
         }
     } catch (err) {
