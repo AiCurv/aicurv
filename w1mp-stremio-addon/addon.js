@@ -10,13 +10,24 @@ const HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 };
 
-// ─── Helpers ────────────────────────────────────────────────────────
+// ─── Simple in-memory cache (5 min TTL) ─────────────────────────────
 
-async function fetchPage(url) {
+const cache = new Map();
+const CACHE_TTL = 5 * 60 * 1000;
+
+async function cachedFetch(url) {
+    const now = Date.now();
+    const cached = cache.get(url);
+    if (cached && now - cached.ts < CACHE_TTL) return cached.html;
+
     const res = await fetch(url, { headers: HEADERS, timeout: 15000 });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-    return await res.text();
+    const html = await res.text();
+    cache.set(url, { html, ts: now });
+    return html;
 }
+
+// ─── Helpers ────────────────────────────────────────────────────────
 
 function fixUrl(url) {
     if (!url) return "";
@@ -27,7 +38,6 @@ function fixUrl(url) {
 
 function parseVideoCard(el) {
     const $ = el;
-    // Try multiple link selectors — not all cards have .custom-preview-block-video-wrap
     let linkEl = $.find("a.custom-preview-block-video-wrap").first();
     if (!linkEl.length) {
         linkEl = $.find("a[href*='/video/']").first();
@@ -61,6 +71,10 @@ function parseVideoCard(el) {
     const modelSlugMatch = modelHref.match(/\/models\/([^/]+)\/?/);
     const modelSlug = modelSlugMatch ? modelSlugMatch[1] : "";
 
+    // Extract model avatar from card if available
+    const modelAvatarEl = $.find(".card-model-avatar img").first();
+    const modelAvatar = modelAvatarEl.length ? fixUrl(modelAvatarEl.attr("src") || "") : "";
+
     const viewsEl = $.find(".info-item .item-tool").last();
     const views = viewsEl.text().trim();
 
@@ -73,6 +87,7 @@ function parseVideoCard(el) {
         preview,
         modelName,
         modelSlug,
+        modelAvatar,
         views,
         href: fixUrl(href),
     };
@@ -81,7 +96,7 @@ function parseVideoCard(el) {
 function extractVideoCards(html) {
     const $ = cheerio.load(html);
     const videos = [];
-    $(".card.thumb_rel.item, .thumbs .card.item").each((_, el) => {
+    $(".card.item").each((_, el) => {
         const card = parseVideoCard($(el));
         if (card) videos.push(card);
     });
@@ -108,13 +123,36 @@ function extractModelCards(html) {
     return models;
 }
 
+// ─── Model avatar cache (slug → poster URL) ─────────────────────────
+
+const modelAvatarCache = new Map();
+
+async function getModelPoster(slug) {
+    if (modelAvatarCache.has(slug)) return modelAvatarCache.get(slug);
+
+    // Try fetching models page and find this model's avatar
+    try {
+        const html = await cachedFetch(`${BASE_URL}/models/`);
+        const models = extractModelCards(html);
+        for (const m of models) {
+            if (m.poster) modelAvatarCache.set(m.slug, m.poster);
+        }
+        if (modelAvatarCache.has(slug)) return modelAvatarCache.get(slug);
+    } catch (e) {}
+
+    // Fallback: try the CDN URL pattern (works for some models)
+    // We don't know the model_id, so we can't construct the exact URL
+    // Use a generic placeholder
+    return "";
+}
+
 // ─── Manifest ───────────────────────────────────────────────────────
 
 const manifest = {
     id: "community.w1mp",
-    version: "1.0.0",
+    version: "2.1.0",
     name: "W1MP",
-    description: "Browse models, categories, and videos from w1mp.com",
+    description: "Browse models, categories, and videos from w1mp.com. Add model pages to your library!",
     logo: "https://www.google.com/s2/favicons?domain=w1mp.com&sz=256",
     background: "https://cdnstatic.w1mp.com/static/images/logo.png",
     resources: [
@@ -124,7 +162,7 @@ const manifest = {
     ],
     types: ["channel", "movie"],
     catalogs: [
-        // Models catalog — searchable so models appear in Stremio search
+        // ── CHANNEL TYPE: Models (creates dedicated "Channels" section in Stremio) ──
         {
             type: "channel",
             id: "models",
@@ -134,7 +172,16 @@ const manifest = {
                 { name: "skip", isRequired: false },
             ],
         },
-        // Categories catalog — browse by category
+        // ── MOVIE TYPE: Searchable video catalog ──
+        {
+            type: "movie",
+            id: "video_search",
+            name: "Video Search",
+            extra: [
+                { name: "search", isRequired: true }, // search-only catalog
+            ],
+        },
+        // ── MOVIE TYPE: Category browsing ──
         {
             type: "movie",
             id: "categories",
@@ -158,21 +205,19 @@ const manifest = {
                 { name: "skip", isRequired: false },
             ],
         },
-        // Latest videos catalog
+        // ── MOVIE TYPE: Browse catalogs ──
         {
             type: "movie",
             id: "latest",
             name: "Latest Videos",
             extra: [{ name: "skip", isRequired: false }],
         },
-        // Top rated
         {
             type: "movie",
             id: "top_rated",
             name: "Top Rated",
             extra: [{ name: "skip", isRequired: false }],
         },
-        // Most popular
         {
             type: "movie",
             id: "most_popular",
@@ -223,83 +268,82 @@ const CATEGORY_SLUG_MAP = {
 
 builder.defineCatalogHandler(async (args) => {
     const skip = parseInt(args.extra?.skip || "0");
-    const page = Math.floor(skip / 36) + 1; // ~36 items per page
+    const page = Math.floor(skip / 40) + 1; // ~40 items per page
 
     try {
-        // ── Models catalog (searchable) ──
+        // ── Models catalog (channel type, searchable) ──
         if (args.id === "models" && args.type === "channel") {
             if (args.extra?.search) {
-                // Search for models
                 const query = args.extra.search;
+                const queryLower = query.toLowerCase();
+
+                // Strategy: Search the site, extract unique models from video results
                 const searchUrl = `${BASE_URL}/search/?q=${encodeURIComponent(query)}`;
-                const html = await fetchPage(searchUrl);
+                const html = await cachedFetch(searchUrl);
                 const videos = extractVideoCards(html);
 
                 // Extract unique models from search results
                 const modelMap = {};
                 for (const v of videos) {
-                    if (v.modelSlug && !modelMap[v.modelSlug]) {
-                        modelMap[v.modelSlug] = v.modelName;
-                    }
-                }
-
-                // Also try fetching models page and filter
-                const modelsHtml = await fetchPage(`${BASE_URL}/models/`);
-                const allModels = extractModelCards(modelsHtml);
-                const queryLower = query.toLowerCase();
-                const matchingModels = allModels.filter(m =>
-                    m.name.toLowerCase().includes(queryLower)
-                );
-
-                // Merge: prioritize direct model matches, then extracted from videos
-                for (const m of matchingModels) {
-                    if (!modelMap[m.slug]) {
-                        modelMap[m.slug] = m.name;
-                    }
-                }
-
-                // Also fetch more model pages for better search
-                for (let p = 2; p <= 5; p++) {
-                    try {
-                        const pHtml = await fetchPage(`${BASE_URL}/models/${p}/`);
-                        const pModels = extractModelCards(pHtml);
-                        for (const m of pModels) {
-                            if (m.name.toLowerCase().includes(queryLower) && !modelMap[m.slug]) {
-                                modelMap[m.slug] = m.name;
-                            }
+                    if (v.modelSlug) {
+                        if (!modelMap[v.modelSlug]) {
+                            modelMap[v.modelSlug] = { name: v.modelName, avatar: v.modelAvatar };
                         }
-                    } catch (e) { break; }
+                        // Update avatar if we find one
+                        if (v.modelAvatar && !modelMap[v.modelSlug].avatar) {
+                            modelMap[v.modelSlug].avatar = v.modelAvatar;
+                        }
+                    }
                 }
 
-                const metas = Object.entries(modelMap).map(([slug, name]) => ({
+                const metas = Object.entries(modelMap).map(([slug, data]) => ({
                     id: `model_${slug}`,
                     type: "channel",
-                    name: name,
-                    poster: `https://cdnstatic.w1mp.com/contents/models/0/${slug}.jpg`,
+                    name: data.name,
+                    poster: data.avatar || "",
                     posterShape: "poster",
-                    description: `${name} - w1mp.com model`,
+                    description: `${data.name} — model page on W1MP`,
                 }));
+
+                // Sort: models whose name matches the query come FIRST
+                metas.sort((a, b) => {
+                    const aMatch = a.name.toLowerCase().includes(queryLower) ? 0 : 1;
+                    const bMatch = b.name.toLowerCase().includes(queryLower) ? 0 : 1;
+                    return aMatch - bMatch;
+                });
 
                 return { metas };
             } else {
-                // Browse models (no search)
+                // Browse all models
                 const modelsUrl = page > 1
                     ? `${BASE_URL}/models/${page}/`
                     : `${BASE_URL}/models/`;
-                const html = await fetchPage(modelsUrl);
+                const html = await cachedFetch(modelsUrl);
                 const models = extractModelCards(html);
 
                 const metas = models.map(m => ({
                     id: `model_${m.slug}`,
                     type: "channel",
                     name: m.name,
-                    poster: m.poster || `https://cdnstatic.w1mp.com/contents/models/0/${m.slug}.jpg`,
+                    poster: m.poster || "",
                     posterShape: "poster",
-                    description: `${m.videoCount} videos | Rating: ${m.rating}`,
+                    description: `${m.videoCount} | Rating: ${m.rating}`,
                 }));
 
                 return { metas };
             }
+        }
+
+        // ── Video Search catalog (movie type, search-only) ──
+        if (args.id === "video_search" && args.type === "movie") {
+            if (args.extra?.search) {
+                const query = args.extra.search;
+                const searchUrl = `${BASE_URL}/search/?q=${encodeURIComponent(query)}`;
+                const html = await cachedFetch(searchUrl);
+                const videos = extractVideoCards(html);
+                return { metas: videos.map(v => videoToMetaPreview(v)) };
+            }
+            return { metas: [] };
         }
 
         // ── Categories catalog ──
@@ -311,17 +355,14 @@ builder.defineCatalogHandler(async (args) => {
             }
 
             if (categorySlug) {
-                // Browse a specific category
                 const catUrl = page > 1
                     ? `${BASE_URL}/categories/${categorySlug}/${page}/`
                     : `${BASE_URL}/categories/${categorySlug}/`;
-                const html = await fetchPage(catUrl);
+                const html = await cachedFetch(catUrl);
                 const videos = extractVideoCards(html);
-                const metas = videos.map(v => videoToMetaPreview(v));
-                return { metas };
+                return { metas: videos.map(v => videoToMetaPreview(v)) };
             } else {
-                // Show category cards as meta previews
-                const catHtml = await fetchPage(`${BASE_URL}/categories/`);
+                const catHtml = await cachedFetch(`${BASE_URL}/categories/`);
                 const $ = cheerio.load(catHtml);
                 const metas = [];
                 $(".categories-thumbs .card.item").each((_, el) => {
@@ -352,7 +393,7 @@ builder.defineCatalogHandler(async (args) => {
             const url = page > 1
                 ? `${BASE_URL}/latest-updates/${page}/`
                 : `${BASE_URL}/latest-updates/`;
-            const html = await fetchPage(url);
+            const html = await cachedFetch(url);
             const videos = extractVideoCards(html);
             return { metas: videos.map(v => videoToMetaPreview(v)) };
         }
@@ -362,7 +403,7 @@ builder.defineCatalogHandler(async (args) => {
             const url = page > 1
                 ? `${BASE_URL}/top-rated/${page}/`
                 : `${BASE_URL}/top-rated/`;
-            const html = await fetchPage(url);
+            const html = await cachedFetch(url);
             const videos = extractVideoCards(html);
             return { metas: videos.map(v => videoToMetaPreview(v)) };
         }
@@ -372,7 +413,7 @@ builder.defineCatalogHandler(async (args) => {
             const url = page > 1
                 ? `${BASE_URL}/most-popular/${page}/`
                 : `${BASE_URL}/most-popular/`;
-            const html = await fetchPage(url);
+            const html = await cachedFetch(url);
             const videos = extractVideoCards(html);
             return { metas: videos.map(v => videoToMetaPreview(v)) };
         }
@@ -390,11 +431,11 @@ builder.defineMetaHandler(async (args) => {
     const { id, type } = args;
 
     try {
-        // ── Model meta (channel type) ──
+        // ── Model meta (channel type — shows video list) ──
         if (type === "channel" && id.startsWith("model_")) {
             const slug = id.replace("model_", "");
             const modelUrl = `${BASE_URL}/models/${slug}/`;
-            const html = await fetchPage(modelUrl);
+            const html = await cachedFetch(modelUrl);
             const $ = cheerio.load(html);
 
             const name = $(".viewlist-headline .title").first().text().trim() || slug;
@@ -403,46 +444,43 @@ builder.defineMetaHandler(async (args) => {
             const videoCount = stats[0] || "";
             const rating = stats[1] || "";
 
-            // Extract videos on this model's page
-            const videos = [];
-            $(".card.thumb_rel.item, .thumbs .card.item").each((_, el) => {
-                const card = parseVideoCard($(el));
-                if (card) {
-                    const dirPrefix = Math.floor(parseInt(card.videoId) / 1000) * 1000;
-                    videos.push({
-                        id: `video_${card.videoId}`,
-                        title: card.title,
-                        released: new Date().toISOString(),
-                        thumbnail: card.poster || `${CDN_STATIC}/contents/videos_screenshots/${dirPrefix}/${card.videoId}/672x378/1.jpg`,
-                        overview: card.duration ? `Duration: ${card.duration}${card.isHD ? " | HD" : ""}${card.views ? " | " + card.views : ""}` : "",
-                    });
-                }
-            });
+            // Try to find model avatar from the page
+            const modelPageImg = $(".posted img, .about-hold img").first().attr("src");
+            const modelPoster = modelPageImg ? fixUrl(modelPageImg) : await getModelPoster(slug);
 
-            // We'll also try to load more pages for the model
-            for (let p = 2; p <= 3; p++) {
+            // Extract ALL videos from this model's pages
+            const videos = [];
+            const seenIds = new Set();
+
+            // Fetch up to 5 pages of videos for the model
+            for (let p = 1; p <= 5; p++) {
                 try {
-                    const pHtml = await fetchPage(`${BASE_URL}/models/${slug}/${p}/`);
+                    const pUrl = p > 1
+                        ? `${BASE_URL}/models/${slug}/${p}/`
+                        : `${BASE_URL}/models/${slug}/`;
+                    const pHtml = await cachedFetch(pUrl);
                     const p$ = cheerio.load(pHtml);
-                    const pCards = p$(".card.thumb_rel.item, .thumbs .card.item");
-                    if (!pCards.length) break;
-                    pCards.each((_, el) => {
+
+                    let pageHasVideos = false;
+                    p$(".card.item").each((_, el) => {
                         const card = parseVideoCard(p$(el));
-                        if (card) {
+                        if (card && !seenIds.has(card.videoId)) {
+                            seenIds.add(card.videoId);
                             const dirPrefix = Math.floor(parseInt(card.videoId) / 1000) * 1000;
                             videos.push({
                                 id: `video_${card.videoId}`,
                                 title: card.title,
                                 released: new Date().toISOString(),
                                 thumbnail: card.poster || `${CDN_STATIC}/contents/videos_screenshots/${dirPrefix}/${card.videoId}/672x378/1.jpg`,
-                                overview: card.duration ? `Duration: ${card.duration}${card.isHD ? " | HD" : ""}${card.views ? " | " + card.views : ""}` : "",
+                                overview: `${card.duration || ""}${card.isHD ? " HD" : ""}${card.views ? " | " + card.views : ""}`,
                             });
+                            pageHasVideos = true;
                         }
                     });
+
+                    if (!pageHasVideos) break; // No more pages
                 } catch (e) { break; }
             }
-
-            const modelPoster = `${CDN_STATIC}/contents/models/0/${slug}.jpg`;
 
             const meta = {
                 id: id,
@@ -451,13 +489,11 @@ builder.defineMetaHandler(async (args) => {
                 poster: modelPoster,
                 posterShape: "poster",
                 background: modelPoster,
-                description: desc || `${name}${videoCount ? " - " + videoCount : ""}${rating ? " | Rating: " + rating : ""}`,
+                description: desc || `${name}${videoCount ? " — " + videoCount : ""}${rating ? " | Rating: " + rating : ""}`,
                 releaseInfo: "",
                 genres: ["Model"],
                 videos: videos,
-                behaviorHints: {
-                    defaultVideoId: videos.length > 0 ? videos[0].id : undefined,
-                },
+                // CRITICAL: NO defaultVideoId — it causes infinite back-loop in Stremio
             };
 
             return { meta };
@@ -466,16 +502,14 @@ builder.defineMetaHandler(async (args) => {
         // ── Video meta (movie type) ──
         if (type === "movie" && id.startsWith("video_")) {
             const videoId = id.replace("video_", "");
-            // Use embed URL — /video/{id}/ without slug returns 404
             const videoUrl = `${BASE_URL}/embed/${videoId}/`;
-            const html = await fetchPage(videoUrl);
+            const html = await cachedFetch(videoUrl);
             const $ = cheerio.load(html);
 
             const title = $("meta[property='og:title']").attr("content") || $("title").first().text().trim() || `Video ${videoId}`;
             const poster = $("video").attr("poster") || "";
             const description = $("meta[property='og:description']").attr("content") || "";
 
-            // Extract tags/categories and models from embed page
             const genres = [];
             const cast = [];
             $("a[href*='/models/']").each((_, el) => {
@@ -493,7 +527,6 @@ builder.defineMetaHandler(async (args) => {
                 releaseInfo: "",
                 genres: genres,
                 cast: cast,
-                behaviorHints: {},
             };
 
             return { meta };
@@ -503,7 +536,7 @@ builder.defineMetaHandler(async (args) => {
         if (type === "movie" && id.startsWith("category_")) {
             const slug = id.replace("category_", "");
             const catUrl = `${BASE_URL}/categories/${slug}/`;
-            const html = await fetchPage(catUrl);
+            const html = await cachedFetch(catUrl);
             const videos = extractVideoCards(html);
 
             const meta = {
@@ -514,16 +547,12 @@ builder.defineMetaHandler(async (args) => {
                 posterShape: "landscape",
                 description: `Browse ${slug} videos`,
                 genres: [slug],
-                // Return videos as meta previews within the meta
                 videos: videos.slice(0, 100).map(v => ({
                     id: `video_${v.videoId}`,
                     title: v.title,
                     released: new Date().toISOString(),
                     thumbnail: v.poster,
                 })),
-                behaviorHints: {
-                    defaultVideoId: videos.length > 0 ? `video_${videos[0].videoId}` : undefined,
-                },
             };
 
             return { meta };
@@ -539,36 +568,42 @@ builder.defineMetaHandler(async (args) => {
 // ─── STREAM HANDLER ─────────────────────────────────────────────────
 
 builder.defineStreamHandler(async (args) => {
-    const { id } = args;
+    const { id, type } = args;
 
     try {
+        // ── Stream for individual video (from video catalog or channel video list) ──
         if (id.startsWith("video_")) {
             const videoId = id.replace("video_", "");
             const streams = [];
 
-            // Use embed URL — /video/{id}/ without slug returns 404
-            // Embed page also has <video><source> with the MP4 URL
+            // Use embed URL — /video/{id}/ without slug returns 404 on KVS sites
             const embedUrl = `${BASE_URL}/embed/${videoId}/`;
-            const html = await fetchPage(embedUrl);
+            const html = await cachedFetch(embedUrl);
             const $ = cheerio.load(html);
 
             // Extract MP4 from <video><source> tag
             $("video source").each((_, el) => {
                 const src = $(el).attr("src") || "";
                 if (src) {
-                    const fullUrl = fixUrl(src);
                     streams.push({
                         name: "W1MP",
                         title: "Direct MP4",
-                        url: fullUrl,
-                        behaviorHints: {
-                            notWebReady: false,
-                        },
+                        url: fixUrl(src),
+                        behaviorHints: { notWebReady: false },
                     });
                 }
             });
 
             return { streams };
+        }
+
+        // ── Stream for model page (channel type) ──
+        // NOTE: Stremio doesn't request streams for the channel meta itself.
+        // It requests streams for individual videos in the channel's video list.
+        // Those use the video_ prefix handler above.
+        // If somehow requested, return empty — the user should click a video from the list.
+        if (id.startsWith("model_")) {
+            return { streams: [] };
         }
     } catch (err) {
         console.error("Stream error:", err.message);
@@ -588,7 +623,7 @@ function videoToMetaPreview(v) {
         name: v.title,
         poster: poster,
         posterShape: "landscape",
-        description: `${v.duration}${v.isHD ? " HD" : ""}${v.modelName ? " | " + v.modelName : ""}${v.views ? " | " + v.views : ""}`,
+        description: `${v.duration || ""}${v.isHD ? " HD" : ""}${v.modelName ? " | " + v.modelName : ""}${v.views ? " | " + v.views : ""}`,
         releaseInfo: "",
     };
 }
